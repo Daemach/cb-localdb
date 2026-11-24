@@ -1,0 +1,48 @@
+{
+    "name":"cbLocalDB",
+    "slug":"cb-localdb",
+    "version":"0.1.0",
+    "author":"John Wilson",
+    "location":"forgeboxStorage",
+    "homepage":"https://github.com/Daemach/cb-localdb",
+    "documentation":"https://github.com/Daemach/cb-localdb",
+    "repository":{
+        "type":"git",
+        "url":"https://github.com/Daemach/cb-localdb.git"
+    },
+    "bugs":"https://github.com/Daemach/cb-localdb/issues",
+    "shortDescription":"A private scratch database inside your CommandBox container, with a qb accessor for it",
+    "description":"cbLocalDB installs and bootstraps SQL Server inside a CommandBox Docker image (database, login, linked server back to your central server, your SQL scripts) and exposes it to ColdBox through a second qb QueryBuilder and SchemaBuilder, so heavy jobs can crunch locally instead of on the central database.",
+    "type":"modules",
+    "keywords":[
+        "coldbox",
+        "module",
+        "commandbox",
+        "docker",
+        "sql server",
+        "mssql",
+        "qb",
+        "linked server"
+    ],
+    "license":[
+        {
+            "type":"MIT",
+            "url":"https://opensource.org/licenses/MIT"
+        }
+    ],
+    "contributors":[],
+    "dependencies":{
+        "qb":">=9.0.0"
+    },
+    "devDependencies":{},
+    "engines":{
+        "lucee":">=5"
+    },
+    "private":false,
+    "ignore":[
+        "**/.*",
+        "test*/**",
+        "tests/**"
+    ],
+    "installPaths":{}
+}

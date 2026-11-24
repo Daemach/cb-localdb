@@ -1,0 +1,17 @@
+{
+  "connections": [
+    {
+      "db_name": "SalesDB",
+      "schema_mappings": "dbo:salesdb_dbo,ref:salesdb_ref"
+    },
+    {
+      "db_name": "ReportingDB",
+      "schema_mappings": "dbo:reportingdb_dbo",
+      "server_name": "reporting",
+      "db_host": "<central-sql-host>",
+      "db_port": "1433",
+      "db_user": "<sql-login>",
+      "db_password": "<sql-password>"
+    }
+  ]
+}

@@ -1,0 +1,159 @@
+# ARCHIVED REFERENCE (cb-localdb, PostgreSQL experiment, Feb 2025). Not built or tested by this package; see NOTES.md.
+# Original name: Dockerfile (the whole file, in its original order; it built the application image).
+# Changes from the original:
+#   - S3 bucket comes from build arg LOCALDB_SYNC_BUCKET (was a fixed, environment-suffixed bucket name)
+#   - the build-time echo of the AWS access key id was dropped
+#   - the local database password variable in the commented scram block is now LOCALDB_PASSWORD
+#   - the COPY of docker-entrypoint.sh is replaced by the four COPY lines marked "cb-localdb", which put the
+#     renamed files of this directory back at the in-image paths the scripts expect. Adjust their source paths
+#     to wherever this directory sits in your build context. These four lines were never built.
+# The original expected /app/.env2 (bash-sourceable env file) and /app/fdw_connections.json to exist:
+# each `RUN [ -f ... ] && ...` line fails the build when its file is missing.
+
+# Use CommandBox on Alpine
+FROM ortussolutions/commandbox:latest
+
+
+USER root
+
+# Pre-install minimal packages needed to set up the PostgreSQL repository.
+RUN apt-get update && \
+  apt-get install -y --no-install-recommends wget gnupg2 lsb-release ca-certificates && \
+  rm -rf /var/lib/apt/lists/*
+
+RUN echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list && \
+  wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add - && \
+  apt-get update
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+  iputils-ping \
+  dos2unix \
+  nano \
+  git \
+  jq \
+  awscli \
+  # freetds-bin \
+  # freetds-dev \
+  postgresql-14 \
+  postgresql-server-dev-14 \
+  postgresql-client \
+  build-essential \
+  make \
+  gettext \
+  gperf \
+  pkg-config \
+  automake \
+  libtool \
+  autopoint \
+  netcat && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /tmp
+
+RUN git clone --depth=1 --branch v1.4.7 https://github.com/FreeTDS/freetds.git \
+  && cd freetds \
+  && ./autogen.sh \
+  && ./configure --prefix=/usr/local --with-tdsver=7.4 \
+  && make && make install && ldconfig
+# RUN git clone --depth=1 --branch fix-money-numeric https://github.com/Daemach/freetds.git \
+#   && cd freetds \
+#   && ./autogen.sh \
+#   && ./configure --prefix=/usr/local --with-tdsver=7.4 \
+#   && make \
+#   && make install \
+#   && ldconfig
+
+ENV PATH="/usr/local/bin:${PATH}"
+
+# RUN apt-get update && apt-get install -y --no-install-recommends postgresql-14 postgresql-server-dev-14 postgresql-client && rm -rf /var/lib/apt/lists/*
+#  postgresql-contrib awscli traceroute openjdk-11-jre-headless ca-certificates gnupg curl unzip
+
+RUN mkdir -p /var/lib/postgresql/data && chown -R postgres:postgres /var/lib/postgresql/data
+
+ENV APP_DIR=/app
+ENV PATH="/usr/lib/postgresql/14/bin:${PATH}"
+
+ENV FINALIZE_STARTUP=true
+ENV PG_CONFIG=/usr/lib/postgresql/14/bin/pg_config
+
+RUN git clone --branch my-fix-branch https://github.com/Daemach/tds_fdw.git /tmp/tds_fdw && \
+  cd /tmp/tds_fdw && \
+  make PG_CONFIG=${PG_CONFIG} CPPFLAGS="-I$(${PG_CONFIG} --includedir-server)" && \
+  make install PG_CONFIG=${PG_CONFIG} CPPFLAGS="-I$(${PG_CONFIG} --includedir-server)" && \
+  rm -rf /tmp/tds_fdw
+
+COPY . $APP_DIR
+# cb-localdb: map the archived file names back to the original in-image paths
+COPY docker/postgres/entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+COPY docker/postgres/sync.sh $APP_DIR/docker-syncPostgres.sh
+COPY docker/postgres/fdw_setup.sh $APP_DIR/fdw_setup.sh
+COPY docker/postgres/sql/create_table_from_json.sql $APP_DIR/resources/database/sprocs/create_table_from_json.sql
+WORKDIR $APP_DIR
+
+# bash has stringent escaping rules for .env variables that break CF
+RUN [ -f /app/.env2 ] && dos2unix /app/.env2
+RUN [ -f /app/fdw_connections.json ] && dos2unix /app/fdw_connections.json
+RUN [ -f /app/fdw_setup.sh ] && dos2unix /app/fdw_setup.sh && chmod +x /app/fdw_setup.sh
+RUN [ -f /app/docker-syncPostgres.sh ] && dos2unix /app/docker-syncPostgres.sh && chmod +x /app/docker-syncPostgres.sh
+RUN [ -f /usr/local/bin/docker-entrypoint.sh ] && dos2unix /usr/local/bin/docker-entrypoint.sh && chmod +x /usr/local/bin/docker-entrypoint.sh
+
+
+# copy and download data files for import into postgres
+ARG LOCALDB_SYNC_BUCKET
+RUN mkdir -p /tmp/s3import
+COPY ./tmp/s3import /tmp/s3import
+RUN /bin/bash -c " \
+  cd /tmp/s3import && \
+  export ENVIRONMENT=\$(grep '^ENVIRONMENT=' /app/.env2 | cut -d '=' -f2 | sed -E \"s/^[\\\"']+//;s/[\\\"']+\$//\") && \
+  export AWS_ACCESS_KEY_ID=\$(grep '^S3_ACCESS_KEY=' /app/.env2 | cut -d '=' -f2 | sed -E \"s/^[\\\"']+//;s/[\\\"']+\$//\") && \
+  export AWS_SECRET_ACCESS_KEY=\$(grep '^S3_SECRET_KEY=' /app/.env2 | cut -d '=' -f2 | sed -E \"s/^[\\\"']+//;s/[\\\"']+\$//\") && \
+  export AWS_DEFAULT_REGION=\$(grep '^S3_REGION=' /app/.env2 | cut -d '=' -f2 | sed -E \"s/^[\\\"']+//;s/[\\\"']+\$//\") && \
+  S3_PATH=\"s3://\${LOCALDB_SYNC_BUCKET}/syncData/csv\" && \
+  echo \"Extracted ENVIRONMENT: \${ENVIRONMENT}\" && \
+  echo \"Extracted AWS_DEFAULT_REGION: \${AWS_DEFAULT_REGION}\" && \
+  echo \"Local folder: /tmp/s3import\" && \
+  echo \"S3 Path: \${S3_PATH}\" && \
+  localFiles=\$(ls *.csv 2>/dev/null | xargs -n1 basename 2>/dev/null || true) && \
+  remoteFiles=\$(aws s3 ls \"\${S3_PATH}/\" | awk '{print \$4}') && \
+  echo \"\${localFiles}\" | sort > /tmp/local_sorted.txt && \
+  echo \"\${remoteFiles}\" | sort > /tmp/remote_sorted.txt && \
+  diffFiles=\$(comm -13 /tmp/local_sorted.txt /tmp/remote_sorted.txt) && \
+  for file in \${diffFiles}; do \
+  echo \"Downloading new file: \${file}\" && \
+  aws s3 cp \"\${S3_PATH}/\${file}\" \"./\${file}\"; \
+  done"
+
+USER postgres
+
+RUN initdb -D /var/lib/postgresql/data
+
+USER root
+
+# RUN --mount=type=secret,id=forgebox_creds \
+#   export $(cat /run/secrets/forgebox_creds | xargs) && \
+#   box recipe recipeFile=dockerBuild.boxr FORGEBOX_USERNAME=${FORGEBOX_USERNAME} FORGEBOX_PASSWORD=${FORGEBOX_PASSWORD}
+
+RUN export ENVIRONMENT=$(grep '^ENVIRONMENT=' /app/.env2 | cut -d '=' -f2 | sed -E "s/^['\"]+//;s/['\"]+$//") && \
+  if [ "$ENVIRONMENT" = "development" ]; then \
+  echo "host    all             all             0.0.0.0/0               trust" >> /var/lib/postgresql/data/pg_hba.conf && \
+  echo "host    all             all             0.0.0.0/0               trust" >> /etc/postgresql/14/main/pg_hba.conf && \
+  echo "listen_addresses = '*'" >> /var/lib/postgresql/data/postgresql.conf && \
+  echo "listen_addresses = '*'" >> /etc/postgresql/14/main/postgresql.conf; \
+  fi
+
+# RUN export ENVIRONMENT=$(grep '^ENVIRONMENT=' /app/.env2 | cut -d '=' -f2 | sed -E "s/^['\"]+//;s/['\"]+$//") && \
+#   export LOCALDB_PASSWORD=$(grep '^LOCALDB_PASSWORD=' /app/.env2 | cut -d '=' -f2 | sed -E "s/^['\"]+//;s/['\"]+$//") && \
+#   if [ "$ENVIRONMENT" = "development" ]; then \
+#   echo "host    all             all             0.0.0.0/0               scram-sha-256" >> /var/lib/postgresql/data/pg_hba.conf && \
+#   echo "host    all             all             0.0.0.0/0               scram-sha-256" >> /etc/postgresql/14/main/pg_hba.conf && \
+#   echo "listen_addresses = '*'" >> /var/lib/postgresql/data/postgresql.conf && \
+#   echo "listen_addresses = '*'" >> /etc/postgresql/14/main/postgresql.conf && \
+#   echo "ALTER USER postgres WITH PASSWORD '${LOCALDB_PASSWORD}';" | \
+#   /usr/local/bin/postgres --single -D /var/lib/postgresql/data -c config_file=/etc/postgresql/14/main/postgresql.conf postgres; \
+#   fi
+
+EXPOSE 5432
+RUN rm -rf build
+
+RUN  $BUILD_DIR/run.sh
+
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
